@@ -152,4 +152,4 @@ SvelteKit 2, Svelte 5, Vite 7, `adapter-static`, pnpm and IBM Plex Mono, the sam
 
 ## License
 
-No license has been chosen yet. Until one is added, all rights are reserved. Note that cobalt is licensed under AGPL-3.0, which matters if the code is meant to be contributed upstream.
+MIT, see [LICENSE](LICENSE). The file `fixtures/real-world-heaac-hevc.mp4` is a third-party video kept only as a test case; the license covers the code, not that clip.
