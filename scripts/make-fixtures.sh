@@ -15,6 +15,8 @@ ffmpeg -v error -y $src -vf "$flash" -c:v libx265 -preset medium -crf 32 -tag:v 
 # Broken: video and audio timestamps both stretched 2x (the TikTok bug).
 ffmpeg -v error -y -itsscale 2 -i ok-h264-aac.mp4 -c copy -map_metadata -1 -fflags +bitexact broken-2x-h264-aac.mp4
 ffmpeg -v error -y -itsscale 2 -i ok-hevc-aac.mp4 -c copy -tag:v hvc1 -map_metadata -1 -fflags +bitexact broken-2x-hevc-aac.mp4
+# Same bug with the moov first (faststart), the layout real downloads use.
+ffmpeg -v error -y -itsscale 2 -i ok-hevc-aac.mp4 -c copy -tag:v hvc1 -map_metadata -1 -fflags +bitexact -movflags +faststart broken-2x-faststart.mp4
 
 # Broken: only video stretched 2.5x (60 fps footage labelled as 24 fps), audio correct.
 ffmpeg -v error -y -itsscale 2.5 -i ok-h264-aac.mp4 -i ok-h264-aac.mp4 -map 0:v -map 1:a -c copy -map_metadata -1 -fflags +bitexact broken-2.5x-video-only.mp4

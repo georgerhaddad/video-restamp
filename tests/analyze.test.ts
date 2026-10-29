@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { analyze, restamp, type Analysis } from '../src/lib/restamp';
-import { fixture } from './helpers';
+import { fixture, hasRealWorld, REAL_WORLD } from './helpers';
 
 type Known = Extract<Analysis, { status: 'ok' | 'broken' | 'suspect' }>;
 
@@ -97,7 +97,7 @@ const expectations: Expected[] = [
 	{ name: 'suspect-audio-longer.mp4', status: 'suspect', speedFactor: 0.83, realSeconds: 6, realFps: 50, videoNeedsFix: true, audioNeedsFix: false }
 ];
 
-describe.each(expectations)('$name', (expected) => {
+describe.each(expectations.filter((e) => e.name !== REAL_WORLD || hasRealWorld))('$name', (expected) => {
 	const data = fixture(expected.name);
 
 	it(`is ${expected.status}`, () => {

@@ -1,7 +1,7 @@
 // Shared test helpers: fixtures and ffmpeg/ffprobe wrappers.
 
 import { execFileSync, spawnSync } from 'node:child_process';
-import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -15,6 +15,17 @@ export function fixture(name: string): Uint8Array {
 export function fixturePath(name: string): string {
 	return join(FIXTURES, name);
 }
+
+/**
+ * A real affected TikTok (HEVC + HE-AAC). It's a third-party video, so it isn't committed
+ * (see .gitignore); tests that use it run only when a copy is placed in fixtures/.
+ */
+export const REAL_WORLD = 'real-world-heaac-hevc.mp4';
+export const hasRealWorld = existsSync(join(FIXTURES, REAL_WORLD));
+if (!hasRealWorld) console.warn(`fixtures/${REAL_WORLD} not present (it isn't committed): skipping real-world cases`);
+
+/** `[REAL_WORLD]` when the file is present, else `[]`: for building test lists. */
+export const realWorld = (): string[] => (hasRealWorld ? [REAL_WORLD] : []);
 
 export const hasFfmpeg =
 	spawnSync('ffprobe', ['-version']).status === 0 && spawnSync('ffmpeg', ['-version']).status === 0;

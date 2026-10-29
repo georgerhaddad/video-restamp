@@ -12,6 +12,7 @@ import {
 	hasFfmpeg,
 	packetHashes,
 	presentationOrder,
+	realWorld,
 	probeFormatDuration,
 	probePackets,
 	probeStreams,
@@ -87,7 +88,7 @@ const forced = fixWith({ force: true });
 const cases: Case[] = [
 	{ label: 'broken-2x-h264-aac', input: fixture('broken-2x-h264-aac.mp4'), fix: normal, inPlace: true, fps: 60, audioRetimed: true },
 	{ label: 'broken-2x-hevc-aac', input: fixture('broken-2x-hevc-aac.mp4'), fix: normal, inPlace: true, fps: 60, audioRetimed: true },
-	{ label: 'real-world-heaac-hevc', input: fixture('real-world-heaac-hevc.mp4'), fix: normal, inPlace: true, fps: 60, audioRetimed: true },
+	...realWorld().map((name) => ({ label: 'real-world-heaac-hevc', input: fixture(name), fix: normal, inPlace: true, fps: 60, audioRetimed: true })),
 	{
 		label: 'broken-2x-vfr',
 		input: fixture('broken-2x-vfr.mp4'),
@@ -132,8 +133,9 @@ const cases: Case[] = [
 		audioRetimed: true
 	},
 	{
-		label: 'fallback: moov first, appended at end, size-0 mdat (real-world)',
-		input: withOpenEndedLastBox(fixture('real-world-heaac-hevc.mp4')),
+		// Needs moov before mdat, as in real downloads.
+		label: 'fallback: moov first, appended at end, size-0 mdat (broken-2x-faststart)',
+		input: withOpenEndedLastBox(fixture('broken-2x-faststart.mp4')),
 		fix: fixWithOversizedMoov,
 		inPlace: false,
 		fps: 60,

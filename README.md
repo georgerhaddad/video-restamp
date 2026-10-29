@@ -51,7 +51,7 @@ pnpm restamp [--force] in.mp4 [out.mp4]
 It prints what it found and, if the file is broken, writes the fixed copy. Without `out.mp4` the output is `<name>_restamped.mp4` next to the input. If the file is already fine nothing is written. A `suspect` file is only written with `--force`. If it can't be handled the reason is printed and the exit code is 1.
 
 ```
-$ pnpm restamp fixtures/real-world-heaac-hevc.mp4 fixed.mp4
+$ pnpm restamp tiktok.mp4 fixed.mp4
 status:   broken
 length:   15.558 s real, speed factor 2.001
 video:    hvc1, 934 frames, claims 31.133 s at 30.00 fps, really 60 fps (needs fix)
@@ -88,7 +88,7 @@ An MP4 stores the compressed audio and video in one `mdat` box and describes it,
 
 ### Real-world example
 
-`fixtures/real-world-heaac-hevc.mp4` is an affected TikTok file (HEVC video, HE-AAC audio) with identifying metadata blanked. Numbers from `pnpm restamp` and `ffprobe`:
+An affected TikTok file (HEVC video, HE-AAC audio). It is not in the repo because it is someone else's video. Numbers from `pnpm restamp` and `ffprobe`:
 
 | | Before | After |
 | --- | --- | --- |
@@ -134,7 +134,7 @@ Layout:
 - `src/lib/restamp/`: the library. `index.ts` is the entry, `types.ts` the contract.
 - `src/routes`, `src/lib/components`, `src/lib/ui`: the web app.
 - `scripts/restamp.ts`: the CLI.
-- `fixtures/`: test files, named by their expected status. The synthetic ones are made by `scripts/make-fixtures.sh` (needs ffmpeg with libx264 and libx265): a test pattern that flashes white and beeps at the start of every second; broken copies made by stretching timestamps with `-itsscale` (including variable frame rate, 59.94 fps and an awkward timescale); correct but imperfect files that must be left alone (`ok-*`: trimmed, an audio gap, no edit lists, variable frame rate, 59.94 fps) or only flagged (`suspect-*`: audio shorter or longer than the video); and a file with two audio tracks (`unsupported-*`). `broken-2.5x-video-only.mp4` predates the naming and is `suspect`. `real-world-heaac-hevc.mp4` is a real affected file.
+- `fixtures/`: test files, named by their expected status. The synthetic ones are made by `scripts/make-fixtures.sh` (needs ffmpeg with libx264 and libx265): a test pattern that flashes white and beeps at the start of every second; broken copies made by stretching timestamps with `-itsscale` (including variable frame rate, 59.94 fps and an awkward timescale); correct but imperfect files that must be left alone (`ok-*`: trimmed, an audio gap, no edit lists, variable frame rate, 59.94 fps) or only flagged (`suspect-*`: audio shorter or longer than the video); and a file with two audio tracks (`unsupported-*`). `broken-2.5x-video-only.mp4` predates the naming and is `suspect`. Real affected files aren't committed: put one at `fixtures/real-world-heaac-hevc.mp4` (ignored by git) and the tests also run against it; without it those cases are skipped.
 - `assets/demo/`: the README demo.
 
 Regenerate the fixtures and the demo GIF (Git Bash, or any POSIX shell with ffmpeg):
@@ -152,4 +152,4 @@ SvelteKit 2, Svelte 5, Vite 7, `adapter-static`, pnpm and IBM Plex Mono, the sam
 
 ## License
 
-MIT, see [LICENSE](LICENSE). The file `fixtures/real-world-heaac-hevc.mp4` is a third-party video kept only as a test case; the license covers the code, not that clip.
+MIT, see [LICENSE](LICENSE).

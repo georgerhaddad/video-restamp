@@ -21,3 +21,6 @@ Thumbs.db
 # Vite
 vite.config.js.timestamp-*
 vite.config.ts.timestamp-*
+
+# Real-world samples are third-party videos: keep them local
+fixtures/real-world-*

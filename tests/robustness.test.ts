@@ -3,7 +3,7 @@ import { analyze, restamp, type Analysis } from '../src/lib/restamp';
 import { makeBox } from '../src/lib/restamp/boxes';
 import { concatBytes } from '../src/lib/restamp/bytes';
 import { readMovie } from '../src/lib/restamp/movie';
-import { fixture, random } from './helpers';
+import { fixture, random, realWorld } from './helpers';
 
 function expectUnsupported(analysis: Analysis): string {
 	expect(analysis.status).toBe('unsupported');
@@ -48,7 +48,7 @@ describe('bad input', () => {
 		expect(expectUnsupported(analyze(out))).toMatch(/no audio track/);
 	});
 
-	describe.each(['real-world-heaac-hevc.mp4', 'broken-2x-h264-aac.mp4'])('truncated %s', (name) => {
+	describe.each([...realWorld(), 'broken-2x-h264-aac.mp4', 'broken-2x-hevc-aac.mp4'])('truncated %s', (name) => {
 		const data = fixture(name);
 		it('returns unsupported at every cut point', () => {
 			const rng = random(2);
@@ -62,7 +62,7 @@ describe('bad input', () => {
 		});
 	});
 
-	describe.each(['real-world-heaac-hevc.mp4', 'broken-2x-hevc-aac.mp4', 'ok-h264-aac.mp4', 'broken-2x-vfr.mp4', 'broken-2.5x-video-only.mp4'])('corrupted moov in %s', (name) => {
+	describe.each([...realWorld(), 'broken-2x-hevc-aac.mp4', 'ok-h264-aac.mp4', 'broken-2x-vfr.mp4', 'broken-2.5x-video-only.mp4'])('corrupted moov in %s', (name) => {
 		const data = fixture(name);
 		const { moov } = readMovie(data);
 		it('never throws', () => {
