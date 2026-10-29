@@ -88,7 +88,7 @@ An MP4 stores the compressed audio and video in one `mdat` box and describes it,
 
 ### Real-world example
 
-An affected TikTok file (HEVC video, HE-AAC audio). It is not in the repo because it is someone else's video. Numbers from `pnpm restamp` and `ffprobe`:
+An affected TikTok file (HEVC video, HE-AAC audio). It is not in the repo because it is someone else's video. A [demo site](https://clear-harbor-2917990c4a.lakebed.app/) shows a real example. Numbers from `pnpm restamp` and `ffprobe`:
 
 | | Before | After |
 | --- | --- | --- |

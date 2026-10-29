@@ -155,15 +155,9 @@
 	{/if}
 
 	<footer>
-		<h2>How it works</h2>
 		<p>
-			Some phones and screen recorders write the wrong timestamps into the MP4 header, so the
-			footage is stretched (for example 60 fps footage labelled as 30 fps) while the audio keeps
-			its normal speed. video-restamp checks the audio packets, whose real length is known, and
-			rewrites only the timestamp tables in the header. The video and audio data are never
-			re-encoded, so the quality is identical. If the audio looks normal but the video is longer
-			or shorter, it can't tell a stretched video from audio that simply doesn't cover the whole
-			clip, so it asks before changing anything.
+			See a <a href="https://clear-harbor-2917990c4a.lakebed.app/">real example</a>. Source code
+			on <a href="https://github.com/georgerhaddad/video-restamp">GitHub</a>.
 		</p>
 	</footer>
 
@@ -234,14 +228,11 @@
 		color: var(--muted);
 	}
 
-	footer h2 {
-		margin: 0 0 6px;
-		font-size: 0.85rem;
-		font-weight: 500;
-		color: var(--fg);
-	}
-
 	footer p {
 		margin: 0;
+	}
+
+	footer a:hover {
+		color: var(--fg);
 	}
 </style>
