@@ -52,6 +52,25 @@ export function restampedFilename(name: string): string {
 	return `${base}_restamped.mp4`;
 }
 
+/** Sample entry fourcc -> a name people recognise ("hvc1" -> "HEVC (H.265)"). */
+export function codecName(fourcc: string): string {
+	const names: Record<string, string> = {
+		avc1: 'H.264',
+		avc3: 'H.264',
+		hvc1: 'HEVC (H.265)',
+		hev1: 'HEVC (H.265)',
+		av01: 'AV1',
+		vp09: 'VP9'
+	};
+	return names[fourcc] ?? fourcc;
+}
+
+/** Shown in place of the preview when the browser can't play the fixed file. */
+export function previewUnavailable(a: Analysis | undefined): string {
+	const codec = a && a.status !== 'unsupported' ? codecName(a.video.codec) : 'this';
+	return `Your browser can't play ${codec} video, so there's no preview. The fixed file is fine: download it and open it in a player that supports ${codec === 'this' ? 'it' : codec}.`;
+}
+
 /** Short verdict, used for the card badge. */
 export function verdict(a: Analysis): 'fine' | 'fixable' | 'suspect' | 'unsupported' {
 	if (a.status === 'unsupported') return 'unsupported';

@@ -1,7 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import type { Analysis } from '$lib/restamp/types';
 import {
+	codecName,
 	detailRows,
+	previewUnavailable,
 	formatBytes,
 	formatFps,
 	formatSeconds,
@@ -63,6 +65,15 @@ describe('formatters', () => {
 		expect(restampedFilename('clip.MOV')).toBe('clip_restamped.mp4');
 		expect(restampedFilename('a.b.mp4')).toBe('a.b_restamped.mp4');
 		expect(restampedFilename('noext')).toBe('noext_restamped.mp4');
+	});
+	it('names codecs', () => {
+		expect(codecName('hvc1')).toBe('HEVC (H.265)');
+		expect(codecName('avc1')).toBe('H.264');
+		expect(codecName('mp4v')).toBe('mp4v');
+	});
+	it('explains a missing preview', () => {
+		expect(previewUnavailable(make({ v: { codec: 'hev1' } }))).toMatch(/can't play HEVC \(H\.265\) video.*supports HEVC/);
+		expect(previewUnavailable(undefined)).toMatch(/can't play this video.*supports it\.$/);
 	});
 });
 

@@ -1,6 +1,13 @@
 <script lang="ts">
 	import type { Item } from '$lib/ui/items';
-	import { detailRows, formatBytes, restampedFilename, summarize, verdict } from '$lib/ui/describe';
+	import {
+		detailRows,
+		formatBytes,
+		previewUnavailable,
+		restampedFilename,
+		summarize,
+		verdict
+	} from '$lib/ui/describe';
 
 	let {
 		item,
@@ -28,7 +35,11 @@
 
 	const summary = $derived(item.analysis ? summarize(item.analysis, item.forced) : '');
 	const rows = $derived(item.analysis ? detailRows(item.analysis) : []);
-	const hasDetails = $derived(item.analysis && item.analysis.status !== 'unsupported');
+	// Set when the browser can't decode the fixed file (e.g. HEVC in Firefox); keyed by URL so
+	// a re-run that produces a new URL gets a fresh attempt.
+	let previewFailedUrl = $state<string | null>(null);
+
+	const hasDetails =$derived(item.analysis && item.analysis.status !== 'unsupported');
 </script>
 
 <li class="card {kind}">
@@ -76,8 +87,18 @@
 
 		{#if item.url}
 			<div class="result">
-				<!-- svelte-ignore a11y_media_has_caption -->
-				<video src={item.url} controls preload="metadata" aria-label="Preview of {restampedFilename(item.name)}"></video>
+				{#if previewFailedUrl === item.url}
+					<p class="text muted">{previewUnavailable(item.analysis)}</p>
+				{:else}
+					<!-- svelte-ignore a11y_media_has_caption -->
+					<video
+						src={item.url}
+						controls
+						preload="metadata"
+						aria-label="Preview of {restampedFilename(item.name)}"
+						onerror={() => (previewFailedUrl = item.url ?? null)}
+					></video>
+				{/if}
 				<a class="button primary" href={item.url} download={restampedFilename(item.name)}>
 					Download {restampedFilename(item.name)}
 				</a>
