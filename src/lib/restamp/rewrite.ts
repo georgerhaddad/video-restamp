@@ -1,0 +1,108 @@
+// Writes the corrected timing back into the file. Only the moov box changes; media data
+// (mdat) never moves, so every chunk offset (stco/co64) stays valid.
+
+import { childBoxes, makeBox, makeFreeBox, payloadStart, readFullBox, type Box } from './boxes';
+import { concatBytes, UINT32_MAX, UnsupportedError } from './bytes';
+import type { Plan } from './detect';
+import type { Movie } from './movie';
+import { makeCslg, makeCtts, makeElst, makeMediaHeader, makeStts, makeTrackHeader, readElst } from './tables';
+import type { Retimed } from './timing';
+
+// Boxes we descend into to reach the ones we replace. None of them has fields of its own.
+const CONTAINERS = new Set(['moov', 'trak', 'edts', 'mdia', 'minf', 'stbl']);
+
+export function applyPlan(data: Uint8Array, plan: Plan): Uint8Array {
+	const newMoov = buildMoov(data, plan);
+	return placeMoov(data, plan.movie, newMoov);
+}
+
+/** The corrected moov box. */
+export function buildMoov(data: Uint8Array, plan: Plan): Uint8Array {
+	const { movie } = plan;
+	const replacements = new Map<number, Uint8Array>(); // original box offset -> new box
+	const fixed = [plan.video, plan.audio].filter((track): track is Retimed => track !== null);
+	for (const retimed of fixed) addTrackReplacements(data, retimed, replacements);
+
+	// The movie lasts as long as its longest track.
+	let movieDuration = 0;
+	for (const track of movie.tracks) {
+		const retimed = fixed.find((candidate) => candidate.track.trak.start === track.trak.start);
+		movieDuration = Math.max(movieDuration, retimed ? retimed.trackDuration : track.trackHeader.duration);
+	}
+	replacements.set(movie.mvhd.start, makeMediaHeader('mvhd', { ...movie.movieHeader, duration: movieDuration }));
+
+	return rebuildBox(data, movie.moov, replacements);
+}
+
+function addTrackReplacements(data: Uint8Array, retimed: Retimed, replacements: Map<number, Uint8Array>): void {
+	const { track } = retimed;
+	replacements.set(
+		track.mdhd.start,
+		makeMediaHeader('mdhd', { ...track.mediaHeader, timescaleOrTrackId: retimed.timescale, duration: retimed.mediaDuration })
+	);
+	replacements.set(track.stts.start, makeStts(retimed.durations));
+	// ctts and cslg keep their version: it decides whether offsets are signed.
+	if (track.ctts && retimed.offsets) {
+		replacements.set(track.ctts.start, makeCtts(readFullBox(data, track.ctts).version, retimed.offsets));
+	}
+	if (track.cslg && retimed.compositionShift) {
+		replacements.set(track.cslg.start, makeCslg(readFullBox(data, track.cslg).version, retimed.compositionShift));
+	}
+	if (track.elst && retimed.edit) {
+		const { version, flags } = readElst(data, track.elst);
+		replacements.set(track.elst.start, makeElst(version, flags, [retimed.edit]));
+	}
+	replacements.set(track.tkhd.start, makeTrackHeader({ ...track.trackHeader, duration: retimed.trackDuration }));
+}
+
+/** Copies a box, swapping in replacements (keyed by original offset) wherever they are. */
+function rebuildBox(data: Uint8Array, box: Box, replacements: Map<number, Uint8Array>): Uint8Array {
+	const replacement = replacements.get(box.start);
+	if (replacement) return replacement;
+	const containsReplacement = [...replacements.keys()].some((start) => start > box.start && start < box.end);
+	if (!CONTAINERS.has(box.type) || !containsReplacement) return data.slice(box.start, box.end);
+
+	const children = childBoxes(data, box);
+	const parts = children.map((child) => rebuildBox(data, child, replacements));
+	// Keep any trailing bytes too short to be a box, so nothing is silently dropped.
+	const childrenEnd = children.length ? children[children.length - 1].end : payloadStart(box);
+	parts.push(data.slice(childrenEnd, box.end));
+	return makeBox(box.type, concatBytes(parts));
+}
+
+/**
+ * Puts the new moov into the file without moving any other box:
+ * 1. If it fits where the old one was, write it there and fill the rest with a `free` box
+ *    (which needs at least 8 bytes), so the file size and every offset are unchanged.
+ * 2. Otherwise, if the old moov is the last box, just replace it; nothing follows it.
+ * 3. Otherwise append the new moov at the end and turn the old one into `free`.
+ */
+export function placeMoov(data: Uint8Array, movie: Movie, newMoov: Uint8Array): Uint8Array {
+	const { moov, topLevel } = movie;
+	const slack = moov.end - moov.start - newMoov.length;
+	if (slack === 0 || slack >= 8) {
+		const out = data.slice();
+		out.set(newMoov, moov.start);
+		if (slack > 0) out.set(makeFreeBox(slack), moov.start + newMoov.length);
+		return out;
+	}
+
+	const last = topLevel[topLevel.length - 1];
+	if (last === moov) {
+		return concatBytes([data.subarray(0, moov.start), newMoov]);
+	}
+
+	// Anything past the last box is too short to be a box; drop it so the appended moov
+	// directly follows a complete box.
+	const out = concatBytes([data.subarray(0, last.end), newMoov]);
+	out.set([0x66, 0x72, 0x65, 0x65], moov.start + 4); // 'free'
+	if (last.extendsToEnd) {
+		// A size of 0 means "to the end of the file", which would now swallow the new moov.
+		const size = last.end - last.start;
+		if (last.headerSize !== 8 || size > UINT32_MAX) {
+			throw new UnsupportedError("The corrected header doesn't fit in the file's layout.");
+		}
+		new DataView(out.buffer, out.byteOffset).setUint32(last.start, size);
+	}
+	return out;
+}
