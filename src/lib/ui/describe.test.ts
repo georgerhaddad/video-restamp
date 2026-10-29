@@ -10,15 +10,15 @@ import {
 	verdict
 } from './describe';
 
-type Fixable = Extract<Analysis, { status: 'ok' | 'broken' }>;
+type Known = Extract<Analysis, { status: 'ok' | 'broken' | 'suspect' }>;
 
 function make(over: {
-	status?: 'ok' | 'broken';
+	status?: Known['status'];
 	real?: number;
 	factor?: number;
-	v?: Partial<Fixable['video']>;
-	a?: Partial<Fixable['audio']>;
-}): Fixable {
+	v?: Partial<Known['video']>;
+	a?: Partial<Known['audio']>;
+}): Known {
 	return {
 		status: over.status ?? 'broken',
 		realSeconds: over.real ?? 15.6,
@@ -111,6 +111,28 @@ describe('summarize', () => {
 		expect(detailRows(a)).toEqual([
 			{ label: 'Reason', value: 'Fragmented MP4 is not supported.' }
 		]);
+	});
+});
+
+describe('suspect files', () => {
+	const suspect = (factor: number) =>
+		make({ status: 'suspect', factor, real: 6, v: { claimedSeconds: 6 * factor, labelledFps: 24 }, a: { claimedSeconds: 6 } });
+
+	it('explains why it was not fixed', () => {
+		const a = suspect(2.5);
+		expect(verdict(a)).toBe('suspect');
+		expect(summarize(a)).toBe(
+			'The video claims to be 2.5x longer than its audio, but the audio timing looks normal. It may be a stretched video, or one whose audio is simply shorter.'
+		);
+	});
+	it('handles video shorter than its audio', () => {
+		expect(summarize(suspect(0.8))).toMatch(/^The video claims to be 1\.25x shorter than its audio.*audio is simply longer\.$/);
+	});
+	it('says what happened when fixed anyway', () => {
+		expect(summarize(suspect(2.5), true)).toMatch(/Fixed anyway: the video now plays at 60 fps and lasts 6\.0 s, like the audio\.$/);
+	});
+	it('does not flag either track as wrong', () => {
+		expect(detailRows(suspect(2.5)).some((row) => row.wrong)).toBe(false);
 	});
 });
 

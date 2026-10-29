@@ -10,5 +10,7 @@ export interface Item {
 	state: ItemState;
 	analysis?: Analysis;
 	url?: string;
+	/** A 'suspect' file the user chose to fix anyway. */
+	forced?: boolean;
 	error?: string;
 }

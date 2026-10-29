@@ -62,7 +62,7 @@ describe('bad input', () => {
 		});
 	});
 
-	describe.each(['real-world-heaac-hevc.mp4', 'broken-2x-hevc-aac.mp4', 'ok-h264-aac.mp4'])('corrupted moov in %s', (name) => {
+	describe.each(['real-world-heaac-hevc.mp4', 'broken-2x-hevc-aac.mp4', 'ok-h264-aac.mp4', 'broken-2x-vfr.mp4', 'broken-2.5x-video-only.mp4'])('corrupted moov in %s', (name) => {
 		const data = fixture(name);
 		const { moov } = readMovie(data);
 		it('never throws', () => {
@@ -74,9 +74,10 @@ describe('bad input', () => {
 					const at = moov.start + Math.floor(rng() * (moov.end - moov.start));
 					corrupt[at] = Math.floor(rng() * 256);
 				}
-				const result = restamp(corrupt);
-				expect(['ok', 'broken', 'unsupported']).toContain(result.analysis.status);
-				if (result.analysis.status === 'broken') expect(result.output).toBeInstanceOf(Uint8Array);
+				const result = restamp(corrupt, { force: true });
+				const { status } = result.analysis;
+				expect(['ok', 'broken', 'suspect', 'unsupported']).toContain(status);
+				if (status === 'broken' || status === 'suspect') expect(result.output).toBeInstanceOf(Uint8Array);
 				else expect(result.output).toBeNull();
 				// These reasons come from the catch-alls, so they would mean a bug rather than bad input.
 				if (result.analysis.status === 'unsupported') {

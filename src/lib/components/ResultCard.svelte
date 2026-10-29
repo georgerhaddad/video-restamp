@@ -2,10 +2,14 @@
 	import type { Item } from '$lib/ui/items';
 	import { detailRows, formatBytes, restampedFilename, summarize, verdict } from '$lib/ui/describe';
 
-	let { item, onremove }: { item: Item; onremove: (id: number) => void } = $props();
+	let {
+		item,
+		onremove,
+		onforce
+	}: { item: Item; onremove: (id: number) => void; onforce: (id: number) => void } = $props();
 
-	const kind = $derived.by((): 'queued' | 'processing' | 'error' | ReturnType<typeof verdict> => {
-		if (item.state === 'done' && item.analysis) return verdict(item.analysis);
+	const kind = $derived.by((): 'queued' | 'processing' | 'error' | 'forced' | ReturnType<typeof verdict> => {
+		if (item.state === 'done' && item.analysis) return item.forced && item.url ? 'forced' : verdict(item.analysis);
 		return item.state === 'done' ? 'error' : item.state;
 	});
 
@@ -16,11 +20,13 @@
 			error: 'Error',
 			fine: 'Looks fine',
 			fixable: 'Fixed',
+			suspect: 'Check this',
+			forced: 'Fixed anyway',
 			unsupported: "Can't fix"
 		}[kind]
 	);
 
-	const summary = $derived(item.analysis ? summarize(item.analysis) : '');
+	const summary = $derived(item.analysis ? summarize(item.analysis, item.forced) : '');
 	const rows = $derived(item.analysis ? detailRows(item.analysis) : []);
 	const hasDetails = $derived(item.analysis && item.analysis.status !== 'unsupported');
 </script>
@@ -56,6 +62,16 @@
 					{/each}
 				</dl>
 			</details>
+		{/if}
+
+		{#if kind === 'suspect'}
+			<div class="choice">
+				<p class="text muted">
+					Fixing it makes the video play at the audio's length. If the audio really is shorter or
+					longer than the video, that would make the video wrong.
+				</p>
+				<button type="button" class="button" onclick={() => onforce(item.id)}>Fix anyway</button>
+			</div>
 		{/if}
 
 		{#if item.url}
@@ -117,7 +133,14 @@
 		border: 1px solid var(--border);
 	}
 
-	.badge.fixable {
+	.badge.suspect {
+		background: var(--warn-bg);
+		color: var(--warn-fg);
+		border-color: transparent;
+	}
+
+	.badge.fixable,
+	.badge.forced {
 		background: var(--ok-bg);
 		color: var(--ok-fg);
 		border-color: transparent;
@@ -213,6 +236,12 @@
 
 	dd.wrong {
 		color: var(--bad-fg);
+	}
+
+	.choice {
+		display: flex;
+		flex-direction: column;
+		gap: 10px;
 	}
 
 	.result {

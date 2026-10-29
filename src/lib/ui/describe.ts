@@ -1,7 +1,7 @@
 // Turns an Analysis into plain-language text. No DOM, no framework: easy to port.
 import type { Analysis } from '$lib/restamp/types';
 
-type Fixable = Extract<Analysis, { status: 'ok' | 'broken' }>;
+type Known = Extract<Analysis, { status: 'ok' | 'broken' | 'suspect' }>;
 
 export interface DetailRow {
 	label: string;
@@ -53,19 +53,33 @@ export function restampedFilename(name: string): string {
 }
 
 /** Short verdict, used for the card badge. */
-export function verdict(a: Analysis): 'fine' | 'fixable' | 'unsupported' {
+export function verdict(a: Analysis): 'fine' | 'fixable' | 'suspect' | 'unsupported' {
 	if (a.status === 'unsupported') return 'unsupported';
+	if (a.status === 'suspect') return 'suspect';
 	return a.status === 'ok' ? 'fine' : 'fixable';
 }
 
-function speedPhrase(a: Fixable): string {
+function speedPhrase(a: Known): string {
 	const f = a.speedFactor;
 	return f >= 1 ? `${formatFactor(f)} too slow` : `${formatFactor(1 / f)} too fast`;
 }
 
-/** The sentence(s) shown on the card. */
-export function summarize(a: Analysis): string {
+/**
+ * The sentence(s) shown on the card. `forced` means a 'suspect' file was fixed anyway at
+ * the user's request.
+ */
+export function summarize(a: Analysis, forced = false): string {
 	if (a.status === 'unsupported') return a.reason;
+
+	if (a.status === 'suspect') {
+		const f = a.speedFactor;
+		const text =
+			f >= 1
+				? `The video claims to be ${formatFactor(f)} longer than its audio, but the audio timing looks normal. It may be a stretched video, or one whose audio is simply shorter.`
+				: `The video claims to be ${formatFactor(1 / f)} shorter than its audio, but the audio timing looks normal. It may be a sped-up video, or one whose audio is simply longer.`;
+		if (!forced) return text;
+		return `${text} Fixed anyway: the video now plays at ${formatFps(a.video.realFps)} fps and lasts ${formatSeconds(a.realSeconds)}, like the audio.`;
+	}
 
 	if (a.status === 'ok') {
 		return `Looks fine, nothing to fix. ${formatSeconds(a.realSeconds)} at ${formatFps(a.video.realFps)} fps.`;
@@ -92,17 +106,19 @@ export function summarize(a: Analysis): string {
 export function detailRows(a: Analysis): DetailRow[] {
 	if (a.status === 'unsupported') return [{ label: 'Reason', value: a.reason }];
 	const { video, audio } = a;
+	// For a 'suspect' file we don't know which track is wrong, so nothing is flagged.
+	const sure = a.status === 'broken';
 	return [
 		{ label: 'Real length', value: formatSeconds(a.realSeconds) },
 		{ label: 'Speed factor', value: formatFactor(a.speedFactor) },
 		{ label: 'Video codec', value: video.codec },
 		{ label: 'Video frames', value: String(video.frames) },
-		{ label: 'Labelled frame rate', value: `${formatFps(video.labelledFps)} fps`, wrong: video.needsFix },
+		{ label: 'Labelled frame rate', value: `${formatFps(video.labelledFps)} fps`, wrong: sure && video.needsFix },
 		{ label: 'Real frame rate', value: `${formatFps(video.realFps)} fps` },
-		{ label: 'Video length (claimed)', value: formatSeconds(video.claimedSeconds), wrong: video.needsFix },
+		{ label: 'Video length (claimed)', value: formatSeconds(video.claimedSeconds), wrong: sure && video.needsFix },
 		{ label: 'Audio codec', value: audio.codec },
 		{ label: 'Audio profile', value: audio.profile },
 		{ label: 'Audio sample rate', value: `${audio.sampleRate} Hz` },
-		{ label: 'Audio length (claimed)', value: formatSeconds(audio.claimedSeconds), wrong: audio.needsFix }
+		{ label: 'Audio length (claimed)', value: formatSeconds(audio.claimedSeconds), wrong: sure && audio.needsFix }
 	];
 }

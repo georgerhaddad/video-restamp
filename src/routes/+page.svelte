@@ -9,8 +9,10 @@
 	let items = $state<Item[]>([]);
 	let announcement = $state('');
 
-	// Files live outside reactive state; they are released as soon as they are processed.
+	// Files live outside reactive state; they are released as soon as they are processed,
+	// except 'suspect' ones, which are kept in case the user asks to fix them anyway.
 	const pending = new Map<number, File>();
+	const suspects = new Map<number, File>();
 	let nextId = 0;
 	let running = false;
 
@@ -49,15 +51,17 @@
 					if (!file) throw new Error('File is no longer available.');
 					const data = new Uint8Array(await file.arrayBuffer());
 					await yieldToUi();
-					const result = restamp(data);
+					const result = restamp(data, { force: item.forced });
+					const status = result.analysis.status;
+					if ((status === 'broken' || (status === 'suspect' && item.forced)) && !result.output) {
+						throw new Error('No fixed file was produced.');
+					}
 					let url: string | undefined;
-					if (result.analysis.status === 'broken') {
-						if (!result.output) throw new Error('No fixed file was produced.');
-						if (alive(id)) {
-							url = URL.createObjectURL(new Blob([result.output as BlobPart], { type: 'video/mp4' }));
-						}
+					if (result.output && alive(id)) {
+						url = URL.createObjectURL(new Blob([result.output as BlobPart], { type: 'video/mp4' }));
 					}
 					if (alive(id)) {
+						if (result.analysis.status === 'suspect' && !item.forced) suspects.set(id, file);
 						item.analysis = result.analysis;
 						item.url = url;
 						item.state = 'done';
@@ -78,20 +82,36 @@
 
 	function outcomeWord(item: Item): string {
 		if (!item.analysis) return 'done';
+		if (item.forced) return 'fixed anyway, ready to download';
 		const v = verdict(item.analysis);
+		if (v === 'suspect') return 'not fixed, the audio timing looks normal; check it and choose Fix anyway if needed';
 		return v === 'fine' ? 'looks fine, nothing to fix' : v === 'fixable' ? 'fixed, ready to download' : "can't fix";
+	}
+
+	/** Queues a 'suspect' file again, to be fixed anyway (trusting its audio length). */
+	function force(id: number) {
+		const item = items.find((i) => i.id === id);
+		const file = suspects.get(id);
+		if (!item || !file) return;
+		suspects.delete(id);
+		pending.set(id, file);
+		item.forced = true;
+		item.state = 'queued';
+		void run();
 	}
 
 	function remove(id: number) {
 		const item = items.find((i) => i.id === id);
 		if (item?.url) URL.revokeObjectURL(item.url);
 		pending.delete(id);
+		suspects.delete(id);
 		items = items.filter((i) => i.id !== id);
 	}
 
 	function clearAll() {
 		for (const item of items) if (item.url) URL.revokeObjectURL(item.url);
 		pending.clear();
+		suspects.clear();
 		items = [];
 		announcement = 'List cleared';
 	}
@@ -128,7 +148,7 @@
 			</div>
 			<ul>
 				{#each items as item (item.id)}
-					<ResultCard {item} onremove={remove} />
+					<ResultCard {item} onremove={remove} onforce={force} />
 				{/each}
 			</ul>
 		</section>
@@ -139,8 +159,11 @@
 		<p>
 			Some phones and screen recorders write the wrong timestamps into the MP4 header, so the
 			footage is stretched (for example 60 fps footage labelled as 30 fps) while the audio keeps
-			its normal speed. video-restamp rewrites only the timestamp tables in the header. The video
-			and audio data are never re-encoded, so the quality is identical.
+			its normal speed. video-restamp checks the audio packets, whose real length is known, and
+			rewrites only the timestamp tables in the header. The video and audio data are never
+			re-encoded, so the quality is identical. If the audio looks normal but the video is longer
+			or shorter, it can't tell a stretched video from audio that simply doesn't cover the whole
+			clip, so it asks before changing anything.
 		</p>
 	</footer>
 

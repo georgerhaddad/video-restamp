@@ -1,6 +1,6 @@
-// Command-line wrapper: pnpm restamp <in.mp4> [out.mp4]
+// Command-line wrapper: pnpm restamp [--force] <in.mp4> [out.mp4]
 // Prints the analysis and, if the file is broken, writes the fixed copy
-// (default: <name>_restamped.mp4 next to the input).
+// (default: <name>_restamped.mp4 next to the input). --force also fixes a 'suspect' file.
 //
 // Runs on Node's built-in type stripping (on by default since Node 22.18). The library
 // uses extensionless relative imports, as Vite and SvelteKit expect, so we teach Node's
@@ -25,13 +25,15 @@ registerHooks({
 
 const { restamp } = await import('../src/lib/restamp/index.ts');
 
-const [input, outputArg] = process.argv.slice(2);
+const args = process.argv.slice(2);
+const force = args.includes('--force');
+const [input, outputArg] = args.filter((arg) => arg !== '--force');
 if (!input) {
-	console.error('usage: pnpm restamp <in.mp4> [out.mp4]');
+	console.error('usage: pnpm restamp [--force] <in.mp4> [out.mp4]');
 	process.exit(2);
 }
 
-const { analysis, output } = restamp(new Uint8Array(readFileSync(input)));
+const { analysis, output } = restamp(new Uint8Array(readFileSync(input)), { force });
 
 if (analysis.status === 'unsupported') {
 	console.log(`unsupported: ${analysis.reason}`);
@@ -54,6 +56,9 @@ if (output) {
 	const outPath = outputArg ?? join(dirname(input), `${basename(input, extname(input))}_restamped${extname(input) || '.mp4'}`);
 	writeFileSync(outPath, output);
 	console.log(`wrote:    ${outPath}`);
+} else if (analysis.status === 'suspect') {
+	console.log("not fixed: the audio timing looks normal, so the video may be stretched or the audio may just be");
+	console.log('          shorter or longer than the video. Run with --force to make the video match the audio.');
 } else {
 	console.log('nothing to fix');
 }

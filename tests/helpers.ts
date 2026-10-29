@@ -83,3 +83,37 @@ export function random(seed: number): () => number {
 export function sameBytes(a: Uint8Array, b: Uint8Array): boolean {
 	return Buffer.from(a.buffer, a.byteOffset, a.byteLength).equals(Buffer.from(b.buffer, b.byteOffset, b.byteLength));
 }
+
+export function probeFormatDuration(path: string): number {
+	const out = execFileSync('ffprobe', ['-v', 'error', '-show_entries', 'format=duration', '-of', 'csv=p=0', path], { encoding: 'utf8' });
+	return Number(out.trim());
+}
+
+export interface Packet {
+	pts: number; // seconds
+	dts: number;
+	duration: number;
+}
+
+/** Per stream index, every packet's timestamps in decode (file) order, as ffprobe reports them. */
+export function probePackets(path: string): Map<number, Packet[]> {
+	const text = execFileSync(
+		'ffprobe',
+		['-v', 'error', '-show_entries', 'packet=stream_index,pts_time,dts_time,duration_time', '-of', 'csv=p=0', path],
+		{ encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 }
+	);
+	const streams = new Map<number, Packet[]>();
+	for (const line of text.split(/\r?\n/)) {
+		if (!line.trim()) continue;
+		const [stream, pts, dts, duration] = line.split(',');
+		const index = Number(stream);
+		if (!streams.has(index)) streams.set(index, []);
+		streams.get(index)!.push({ pts: Number(pts), dts: Number(dts), duration: Number(duration) });
+	}
+	return streams;
+}
+
+/** Indices sorted by presentation time (ties by decode order). */
+export function presentationOrder(packets: Packet[]): number[] {
+	return packets.map((_, i) => i).sort((a, b) => packets[a].pts - packets[b].pts || a - b);
+}

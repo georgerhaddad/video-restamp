@@ -1,20 +1,50 @@
-// Works out a file's real length from its audio and decides whether its timestamps are
-// stretched. Only the moov headers are read; no media is decoded.
+// Decides whether a file's timestamps are stretched, and by how much. Only the moov headers
+// are read; no media is decoded.
+//
+// The evidence comes from the audio. An AAC packet always decodes to the same number of
+// samples, so its true duration is known. If the packets claim a duration far from that
+// (the TikTok case: ~2x), the timestamps are stretched, and the real length is the packet
+// count times the true duration. A file whose audio packets are timed right, but whose video
+// is longer or shorter than the audio, is ambiguous: the video may be stretched, or the
+// audio may simply not cover the whole clip. That is reported as 'suspect' and only fixed
+// on request.
 
 import { readAacConfig } from './aac';
 import { UnsupportedError } from './bytes';
-import { readMovie, readTrack, type Movie, type Track } from './movie';
+import { readMovie, readTrack, type Movie, type Track, type TrackSummary } from './movie';
 import { expandDurations, expandOffsets, readCtts, readStts } from './tables';
-import { presentedSeconds, readEdit, retimeAudio, retimeVideo, sum, type Retimed } from './timing';
+import {
+	median,
+	presentedSeconds,
+	readEdit,
+	retimeAudio,
+	retimeVideo,
+	sum,
+	videoPresentedSeconds,
+	type Retimed,
+	type VideoTiming
+} from './timing';
 import type { Analysis } from './types';
 
-// How far a claimed length may be from the real one before we call it wrong.
-const LENGTH_TOLERANCE = 0.02;
+// Audio packets count as stretched when their median duration is this far from the true
+// one. Robust to a few odd packets: a gap, or a long first packet covering encoder delay.
+const AUDIO_STRETCH_THRESHOLD = 0.1;
 
-// Frame rates we snap to. Only whole numbers: 29.97 vs 30 is a 0.1% difference, finer than
-// a length measured to the nearest audio packet can resolve on a short clip.
+// How far the video length may be from the real one before we call it wrong: 2%, but at
+// least 100 ms, since even correct short clips often have audio a few packets longer or
+// shorter than the video (encoder delay, B-frame delay without an edit list).
+const LENGTH_TOLERANCE = 0.02;
+const LENGTH_TOLERANCE_SECONDS = 0.1;
+
+// When both tracks are stretched they must be stretched alike for us to be confident.
+const FACTOR_AGREEMENT = 0.05;
+
+// Constant-rate video is snapped to one of these when that still ends with the audio, within
+// a frame or this many seconds. Otherwise the exact factor is used, so long clips at 59.94 or
+// 29.97 fps don't drift. Only whole numbers: on a short clip a length measured to the nearest
+// audio packet can't tell 59.94 from 60.
 const STANDARD_FRAME_RATES = [24, 25, 30, 48, 50, 60, 90, 100, 120];
-const FRAME_RATE_SNAP_TOLERANCE = 0.015;
+const SNAP_LENGTH_TOLERANCE_SECONDS = 0.02;
 
 // Outside this range the audio clearly doesn't span the video, so it can't tell us the speed.
 const PLAUSIBLE_FRAME_RATES = { min: 1, max: 240 };
@@ -28,7 +58,7 @@ export interface Plan {
 
 export interface Inspection {
 	analysis: Analysis;
-	plan: Plan | null; // set when analysis.status is 'broken'
+	plan: Plan | null; // set when analysis.status is 'broken' or 'suspect'
 }
 
 export function inspect(data: Uint8Array): Inspection {
@@ -52,10 +82,17 @@ function inspectOrThrow(data: Uint8Array): Inspection {
 	if (!audioSummary) {
 		throw new UnsupportedError("The file has no audio track, so its real length can't be worked out.");
 	}
+	const others = movie.tracks.filter((track) => track !== videoSummary && track !== audioSummary && isEnabled(track));
+	if (others.length > 0) {
+		throw new UnsupportedError(
+			`The file has ${movie.tracks.length} tracks. Only files with one video and one audio track are supported, ` +
+				'because the other tracks would keep their old timing.'
+		);
+	}
 	const video = readTrack(data, videoSummary);
 	const audio = readTrack(data, audioSummary);
 
-	// Audio: the true length is the packet count times the samples each packet decodes to.
+	// Audio
 	if (audio.sampleCount === 0) throw new UnsupportedError('The audio track is empty.');
 	if (audio.sampleEntries.length !== 1) {
 		throw new UnsupportedError('The audio track has more than one sample description.');
@@ -72,85 +109,112 @@ function inspectOrThrow(data: Uint8Array): Inspection {
 	const audioDurations = expandDurations(readStts(data, audio.stts), audio.sampleCount);
 	const audioEdit = readEdit(data, audio, sum(audioDurations));
 	const claimedAudioSeconds = presentedSeconds(sum(audioDurations), audioEdit, audioTimescale, movieTimescale);
-	const correctedAudio = retimeAudio(audio, audioDurations, audioEdit, packetDuration, movieTimescale);
-	const realSeconds = presentedSeconds(correctedAudio.mediaDuration, correctedAudio.edit, audioTimescale, movieTimescale);
+	// The last packet is often short on purpose, so it doesn't count towards the median.
+	const typicalPacket = median(audioDurations.subarray(0, audioDurations.length - 1));
+	const audioStretched = Math.abs(typicalPacket / packetDuration - 1) > AUDIO_STRETCH_THRESHOLD;
+	// Audio that isn't stretched is trusted as it is, gaps and all.
+	const correctedAudio = audioStretched ? retimeAudio(audio, audioDurations, audioEdit, packetDuration, movieTimescale) : null;
+	const realSeconds = correctedAudio
+		? presentedSeconds(correctedAudio.mediaDuration, correctedAudio.edit, audioTimescale, movieTimescale)
+		: claimedAudioSeconds;
 	if (!(realSeconds > 0)) throw new UnsupportedError('The audio track has no playable length.');
+	const audioFactor = claimedAudioSeconds / realSeconds;
 
-	// Video: what the timestamps claim, versus the frame count over the real length.
+	// Video
 	const frames = video.sampleCount;
 	if (frames === 0) throw new UnsupportedError('The video track has no frames.');
-	const videoTimescale = video.mediaHeader.timescaleOrTrackId;
 	const videoDurations = expandDurations(readStts(data, video.stts), frames);
-	const videoEdit = readEdit(data, video, sum(videoDurations));
-	const claimedVideoSeconds = sum(videoDurations) / videoTimescale;
-	if (!(claimedVideoSeconds > 0)) throw new UnsupportedError('The video track has no length.');
-	const measuredFps = frames / realSeconds;
-	const realFps = snapFrameRate(measuredFps);
+	const videoTiming: VideoTiming = {
+		timescale: video.mediaHeader.timescaleOrTrackId,
+		mediaDuration: video.mediaHeader.duration,
+		durations: videoDurations,
+		offsets: readVideoOffsets(data, video),
+		edit: readEdit(data, video, sum(videoDurations))
+	};
+	const claimedVideoSeconds = videoPresentedSeconds(videoTiming, movieTimescale);
+	const totalVideoSeconds = sum(videoDurations) / videoTiming.timescale;
+	if (!(claimedVideoSeconds > 0 && totalVideoSeconds > 0)) throw new UnsupportedError('The video track has no length.');
+	const speedFactor = claimedVideoSeconds / realSeconds;
+	const labelledFps = frames / totalVideoSeconds;
+	const snap = snapFrameRate(videoTiming, claimedVideoSeconds, realSeconds);
+	const measuredFps = labelledFps * speedFactor;
 
-	const videoNeedsFix = isOff(claimedVideoSeconds, realSeconds);
-	const audioNeedsFix = isOff(claimedAudioSeconds, realSeconds) || !hasPacketDuration(audioDurations, packetDuration);
+	const videoOff = Math.abs(claimedVideoSeconds - realSeconds) > Math.max(LENGTH_TOLERANCE * realSeconds, LENGTH_TOLERANCE_SECONDS);
+	let status: 'ok' | 'broken' | 'suspect';
+	if (audioStretched) {
+		status = !videoOff || Math.abs(speedFactor / audioFactor - 1) <= FACTOR_AGREEMENT ? 'broken' : 'suspect';
+	} else {
+		status = videoOff ? 'suspect' : 'ok';
+	}
 
 	const analysis: Analysis = {
-		status: videoNeedsFix || audioNeedsFix ? 'broken' : 'ok',
+		status,
 		realSeconds,
-		speedFactor: claimedVideoSeconds / realSeconds,
+		speedFactor,
 		video: {
 			codec: video.sampleEntries[0]?.type ?? 'unknown',
 			frames,
 			claimedSeconds: claimedVideoSeconds,
-			labelledFps: frames / claimedVideoSeconds,
-			realFps,
-			needsFix: videoNeedsFix
+			labelledFps,
+			// Video timed right is reported as labelled; otherwise what it really is.
+			realFps: videoOff ? (snap?.fps ?? measuredFps) : labelledFps,
+			needsFix: videoOff
 		},
 		audio: {
 			codec: audio.sampleEntries[0].type,
 			profile: implicitSbr ? 'HE-AAC' : aac.profile,
 			sampleRate: outputSampleRate,
 			claimedSeconds: claimedAudioSeconds,
-			needsFix: audioNeedsFix
+			needsFix: audioStretched
 		}
 	};
-	if (analysis.status === 'ok') return { analysis, plan: null };
+	if (status === 'ok') return { analysis, plan: null };
 
 	let videoFix: Retimed | null = null;
-	if (videoNeedsFix) {
+	if (videoOff) {
 		if (measuredFps < PLAUSIBLE_FRAME_RATES.min || measuredFps > PLAUSIBLE_FRAME_RATES.max) {
 			throw new UnsupportedError(
 				`The audio and video lengths are too far apart to work out the frame rate (it would be ${measuredFps.toFixed(1)} fps).`
 			);
 		}
-		videoFix = retimeVideo(video, videoDurations, readVideoOffsets(data, video), videoEdit, realFps, realSeconds, movieTimescale);
+		const ratio = snap?.ratio ?? 1 / speedFactor;
+		videoFix = retimeVideo(video, videoTiming, ratio, snap?.fps ?? null, movieTimescale);
 	}
-	if (audioNeedsFix) checkAudioFixable(audio, packetDuration);
+	if (correctedAudio) checkAudioFixable(audio, packetDuration);
 
-	return { analysis, plan: { movie, video: videoFix, audio: audioNeedsFix ? correctedAudio : null } };
+	return { analysis, plan: { movie, video: videoFix, audio: correctedAudio } };
 }
 
-function isOff(claimed: number, real: number): boolean {
-	return Math.abs(claimed - real) / real > LENGTH_TOLERANCE;
+export function isEnabled(track: TrackSummary): boolean {
+	return (track.trackHeader.flags & 1) === 1; // tkhd flag track_enabled
 }
 
-/** Whether every packet lasts the expected time, allowing a shorter last packet and 1 tick of rounding. */
-function hasPacketDuration(durations: Float64Array, packetDuration: number): boolean {
-	const last = durations.length - 1;
-	for (let i = 0; i < last; i++) {
-		if (Math.abs(durations[i] - packetDuration) > 1) return false;
+/**
+ * For constant-rate video (every frame the same length, except perhaps the last), the
+ * whole-number rate nearest to the corrected one, and the ratio (new length / old) that
+ * gives exactly that rate. Null when the video isn't constant-rate, or when snapping would
+ * make it end more than a frame (or SNAP_LENGTH_TOLERANCE_SECONDS) away from the audio.
+ */
+function snapFrameRate(video: VideoTiming, claimedSeconds: number, realSeconds: number): { fps: number; ratio: number } | null {
+	const { durations, timescale } = video;
+	const usual = durations[0];
+	for (let i = 1; i < durations.length - 1; i++) {
+		if (durations[i] !== usual) return null;
 	}
-	return durations[last] <= packetDuration + 1;
-}
-
-function snapFrameRate(fps: number): number {
-	let nearest = STANDARD_FRAME_RATES[0];
+	const corrected = (timescale / usual) * (claimedSeconds / realSeconds);
+	let fps = STANDARD_FRAME_RATES[0];
 	for (const rate of STANDARD_FRAME_RATES) {
-		if (Math.abs(fps - rate) < Math.abs(fps - nearest)) nearest = rate;
+		if (Math.abs(corrected - rate) < Math.abs(corrected - fps)) fps = rate;
 	}
-	return Math.abs(fps - nearest) / nearest <= FRAME_RATE_SNAP_TOLERANCE ? nearest : fps;
+	const ratio = timescale / (fps * usual);
+	const tolerance = Math.max(1 / fps, SNAP_LENGTH_TOLERANCE_SECONDS);
+	return Math.abs(claimedSeconds * ratio - realSeconds) <= tolerance ? { fps, ratio } : null;
 }
 
-function readVideoOffsets(data: Uint8Array, video: Track): { version: number; offsets: Float64Array } | null {
+function readVideoOffsets(data: Uint8Array, video: Track): VideoTiming['offsets'] {
 	if (!video.ctts) return null;
 	const { version, runs } = readCtts(data, video.ctts);
-	return { version, offsets: expandOffsets(runs, video.sampleCount) };
+	return { version, values: expandOffsets(runs, video.sampleCount) };
 }
 
 function checkAudioFixable(audio: Track, packetDuration: number): void {

@@ -5,7 +5,7 @@
 
 import { inspect } from './detect';
 import { applyPlan } from './rewrite';
-import type { Analysis, RestampResult } from './types';
+import type { Analysis, RestampOptions, RestampResult } from './types';
 
 export type * from './types';
 
@@ -14,10 +14,13 @@ export function analyze(data: Uint8Array): Analysis {
 	return inspect(data).analysis;
 }
 
-/** Analyzes the file and, if it's broken, returns a fixed copy. Never throws or modifies `data`. */
-export function restamp(data: Uint8Array): RestampResult {
+/**
+ * Analyzes the file and returns a fixed copy if it is 'broken', or 'suspect' and
+ * `options.force` is set. Never throws or modifies `data`.
+ */
+export function restamp(data: Uint8Array, options: RestampOptions = {}): RestampResult {
 	const { analysis, plan } = inspect(data);
-	if (!plan) return { analysis, output: null };
+	if (!plan || (analysis.status === 'suspect' && !options.force)) return { analysis, output: null };
 	try {
 		return { analysis, output: applyPlan(data, plan) };
 	} catch (error) {

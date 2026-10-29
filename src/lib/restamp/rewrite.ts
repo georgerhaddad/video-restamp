@@ -3,7 +3,7 @@
 
 import { childBoxes, makeBox, makeFreeBox, payloadStart, readFullBox, type Box } from './boxes';
 import { concatBytes, UINT32_MAX, UnsupportedError } from './bytes';
-import type { Plan } from './detect';
+import { isEnabled, type Plan } from './detect';
 import type { Movie } from './movie';
 import { makeCslg, makeCtts, makeElst, makeMediaHeader, makeStts, makeTrackHeader, readElst } from './tables';
 import type { Retimed } from './timing';
@@ -23,9 +23,11 @@ export function buildMoov(data: Uint8Array, plan: Plan): Uint8Array {
 	const fixed = [plan.video, plan.audio].filter((track): track is Retimed => track !== null);
 	for (const retimed of fixed) addTrackReplacements(data, retimed, replacements);
 
-	// The movie lasts as long as its longest track.
+	// The movie lasts as long as its longest track. Disabled tracks aren't played (and we
+	// don't retime them), so they don't count.
 	let movieDuration = 0;
 	for (const track of movie.tracks) {
+		if (!isEnabled(track) && !fixed.some((candidate) => candidate.track.trak.start === track.trak.start)) continue;
 		const retimed = fixed.find((candidate) => candidate.track.trak.start === track.trak.start);
 		movieDuration = Math.max(movieDuration, retimed ? retimed.trackDuration : track.trackHeader.duration);
 	}
@@ -41,9 +43,8 @@ function addTrackReplacements(data: Uint8Array, retimed: Retimed, replacements: 
 		makeMediaHeader('mdhd', { ...track.mediaHeader, timescaleOrTrackId: retimed.timescale, duration: retimed.mediaDuration })
 	);
 	replacements.set(track.stts.start, makeStts(retimed.durations));
-	// ctts and cslg keep their version: it decides whether offsets are signed.
 	if (track.ctts && retimed.offsets) {
-		replacements.set(track.ctts.start, makeCtts(readFullBox(data, track.ctts).version, retimed.offsets));
+		replacements.set(track.ctts.start, makeCtts(retimed.offsets.version, retimed.offsets.runs));
 	}
 	if (track.cslg && retimed.compositionShift) {
 		replacements.set(track.cslg.start, makeCslg(readFullBox(data, track.cslg).version, retimed.compositionShift));

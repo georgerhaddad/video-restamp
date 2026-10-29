@@ -11,6 +11,8 @@
 	--ok-fg: #1b5e2b;
 	--bad-bg: #fde0e0;
 	--bad-fg: #a31515;
+	--warn-bg: #fdf0cc;
+	--warn-fg: #7a5200;
 	--radius: 18px;
 	--font: 'IBM Plex Mono', ui-monospace, 'SFMono-Regular', Menlo, Consolas, monospace;
 }
@@ -28,6 +30,8 @@
 		--ok-fg: #7fdc93;
 		--bad-bg: #3a1616;
 		--bad-fg: #ff9a9a;
+		--warn-bg: #3a2e0f;
+		--warn-fg: #ffd27a;
 	}
 }
 

@@ -31,7 +31,7 @@ pnpm install
 pnpm dev
 ```
 
-Open the address Vite prints, drop in one or more `.mp4`, `.mov` or `.m4v` files, and download the fixed copy (`<name>_restamped.mp4`). Files that are already fine are reported and left alone; files that can't be fixed get a reason.
+Open the address Vite prints, drop in one or more `.mp4`, `.mov` or `.m4v` files, and download the fixed copy (`<name>_restamped.mp4`). Files that are already fine are reported and left alone; files that can't be fixed get a reason. A file whose audio timing looks normal but whose video is longer or shorter than the audio is marked "Check this" and only fixed if you press "Fix anyway" (see [How it works](#how-it-works)).
 
 To build a static site that you can host anywhere:
 
@@ -45,15 +45,15 @@ pnpm preview    # optional: serve build/ locally
 Needs Node 22.18 or newer (it runs the TypeScript directly) and the dependencies from `pnpm install`.
 
 ```sh
-pnpm restamp in.mp4 [out.mp4]
+pnpm restamp [--force] in.mp4 [out.mp4]
 ```
 
-It prints what it found and, if the file is broken, writes the fixed copy. Without `out.mp4` the output is `<name>_restamped.mp4` next to the input. If the file is already fine nothing is written. If it can't be handled the reason is printed and the exit code is 1.
+It prints what it found and, if the file is broken, writes the fixed copy. Without `out.mp4` the output is `<name>_restamped.mp4` next to the input. If the file is already fine nothing is written. A `suspect` file is only written with `--force`. If it can't be handled the reason is printed and the exit code is 1.
 
 ```
 $ pnpm restamp fixtures/real-world-heaac-hevc.mp4 fixed.mp4
 status:   broken
-length:   15.581 s real, speed factor 1.998
+length:   15.558 s real, speed factor 2.001
 video:    hvc1, 934 frames, claims 31.133 s at 30.00 fps, really 60 fps (needs fix)
 audio:    mp4a HE-AAC 44100 Hz, claims 31.090 s (needs fix)
 wrote:    fixed.mp4
@@ -63,21 +63,28 @@ The "speed factor" is the length the video timestamps claim divided by the real 
 
 ### As a library
 
-The core is `src/lib/restamp/` (TypeScript, no dependencies). `analyze(bytes)` reports, `restamp(bytes)` reports and returns a fixed copy when the file is broken. Neither throws; unsupported input comes back as `{ status: 'unsupported', reason }`. The contract is in `src/lib/restamp/types.ts`.
+The core is `src/lib/restamp/` (TypeScript, no dependencies). `analyze(bytes)` reports, `restamp(bytes, { force })` reports and returns a fixed copy when the file is `broken`, or `suspect` and `force` is set. The status is `ok`, `broken`, `suspect` or `unsupported` (with a `reason`). Neither function throws. The contract is in `src/lib/restamp/types.ts`.
 
 ## How it works
 
 An MP4 stores the compressed audio and video in one `mdat` box and describes it, including every sample's timestamp, in the `moov` header. Only the header is wrong in an affected file, so only the header is rewritten.
 
-1. **The true length comes from the audio.** An AAC packet always decodes to a fixed number of samples (1024, or 960), and that can't be stretched. The packet count times the samples per packet, divided by the sample rate, is the real length. The tool reads the AAC configuration (`esds`) to get the sample rate and samples per packet, including HE-AAC with implicit or explicit SBR, where the output rate is double the core rate but a packet still lasts the same time.
-2. **The true frame rate follows from that.** Real fps is the video frame count divided by the real length. If it is within 1.5% of 24, 25, 30, 48, 50, 60, 90, 100 or 120 it is snapped to that rate, otherwise the measured value is used. Only whole-number rates are in the list: 29.97 versus 30 is a 0.1% difference, finer than a length measured to the nearest audio packet can resolve on a short clip.
-3. **Broken or not.** A track is broken if its claimed length differs from the real length by more than 2%, or (audio) its packets don't each last the expected time. If neither track is off, the file is reported as fine and no output is produced.
-4. **What gets rewritten.** Video: every frame gets a duration of exactly 1/fps (`stts`), composition offsets (`ctts`) and `cslg` are recomputed so the frame order is preserved, and the media duration (`mdhd`), edit list (`elst`), track duration (`tkhd`) and movie duration (`mvhd`) follow. If the media timescale isn't a multiple of the frame rate it is raised to the least common multiple, so there is a single uniform `stts` entry and no drift. Audio: every packet gets its exact duration, except that a shorter final packet is kept, with the same header fields updated. A single normal-speed edit list (encoder-delay trimming) is kept and remapped.
-5. **Where the new header goes.** Nothing else in the file moves, so every chunk offset (`stco`/`co64`) stays valid.
-   - If the new `moov` fits where the old one was, it is written there and any slack becomes a `free` box. The file size and all offsets are unchanged. This is the usual case, because the new tables are smaller.
+1. **The evidence comes from the audio.** An AAC packet always decodes to a fixed number of samples (1024, or 960), so its true duration is known from the AAC configuration (`esds`). That includes HE-AAC with implicit or explicit SBR, where the output rate is double the core rate but a packet still lasts the same time. If the median packet claims a duration more than 10% away from that, the audio timestamps are stretched. The median ignores a few odd packets, such as a gap or a long first packet covering encoder delay.
+2. **The real length.** For stretched audio it is the packet count times the true packet duration, minus the priming that the audio edit list skips. Audio that isn't stretched is trusted as it is, gaps and all.
+3. **What the video claims.** The video's length is measured the way a player shows it: from the start of its edit list to the end of the last frame, so frames hidden by a trim (`ffmpeg -ss ... -c copy`) don't count. The speed factor is that length divided by the real length.
+4. **The verdict.**
+   - `ok`: the audio isn't stretched and the video length is within 2% (and at least 100 ms) of the real one.
+   - `broken`: the audio is stretched, and the video either already matches the real length (only the audio is fixed) or is stretched by the same factor, within 5% (both are fixed). This is the TikTok case.
+   - `suspect`: the audio looks normal but the video is longer or shorter. That could be stretched video, or audio that simply doesn't cover the whole clip, and nothing in the file tells them apart. It is not fixed unless asked (`force`, "Fix anyway"), and then the video is made to match the audio.
+   - `unsupported`: see [Limitations](#limitations).
+5. **What gets rewritten.**
+   - Video: every timestamp (each frame's decode and presentation time, and the edit's start) is multiplied by one factor, so variable frame rates keep their shape and frames stay in the same order. Constant-rate video is snapped to a whole-number rate (24, 25, 30, 48, 50, 60, 90, 100 or 120 fps) when that still ends within a frame, or 20 ms, of the audio. Otherwise the exact factor is used, so long clips at 59.94 fps don't drift. When the new durations need it, the media timescale is raised by a whole multiple: to the least common multiple with the snapped rate, so 60 fps is exactly 60 fps, or, for an exact factor, until the length is within 1 ms. Composition offsets (`ctts`, `cslg`), media duration (`mdhd`), edit list (`elst`), track duration (`tkhd`) and movie duration (`mvhd`) follow.
+   - Audio: every packet gets its true duration. The last packet, usually short on purpose to trim the encoder's padding, is scaled by the same stretch and capped at a full packet. The edit list's priming is remapped.
+6. **Where the new header goes.** Nothing else in the file moves, so every chunk offset (`stco`/`co64`) stays valid.
+   - If the new `moov` fits where the old one was, it is written there and any slack becomes a `free` box. The file size and all offsets are unchanged. This is the usual case.
    - Otherwise, if the old `moov` is the last box, it is replaced and the file shrinks or grows.
    - Otherwise the new `moov` is appended at the end and the old one is turned into a `free` box. The file grows, and a fast-start layout (header first) is lost.
-6. **Lossless.** No frame or audio sample is decoded, re-encoded or touched; the `mdat` bytes stay at the same offsets. The tests check with ffmpeg that the packets in the output are byte-identical to the input.
+7. **Lossless.** No frame or audio sample is decoded, re-encoded or touched; the `mdat` bytes stay at the same offsets. The tests check with ffmpeg that the packets in the output are byte-identical and in the same order, that video frames keep their presentation order with all timestamps scaled by one factor, and that the video, audio and container lengths match the real length.
 
 ### Real-world example
 
@@ -85,28 +92,28 @@ An MP4 stores the compressed audio and video in one `mdat` box and describes it,
 
 | | Before | After |
 | --- | --- | --- |
-| Length (ffprobe, container) | 31.133 s | 15.581 s |
-| Audio length | 31.090 s | 15.581 s |
+| Length (ffprobe, container) | 31.133 s | 15.567 s |
+| Audio length | 31.090 s | 15.558 s |
 | Video length | 31.133 s | 15.567 s |
 | Frame rate (ffprobe) | 30 fps | 60 fps |
 | Video frames | 934 | 934 |
 | File size | 6,763,387 bytes | 6,763,387 bytes |
 
-The video is 14 ms shorter than the audio because 934 frames at exactly 60 fps is 15.567 s, while the audio length implies 59.94 fps. That is the cost of snapping to whole-number rates.
+934 frames at exactly 60 fps is 15.567 s, 9 ms longer than the audio. That is within a frame, so the video is snapped to exactly 60 fps rather than the 60.03 fps the audio length implies.
 
 ## Limitations
 
-The real length is taken from the audio, so the audio has to be there and has to be trustworthy.
+The evidence and the real length come from the audio, so the audio has to be there and has to be AAC.
 
-- **Audio length is the reference.** If a file's audio is genuinely shorter or longer than its video, that can't be told apart from stretched video. The tool will "fix" it by changing the video speed. It refuses only when the implied frame rate falls outside 1 to 240 fps.
-- **AAC audio only.** The file needs a video track and an AAC audio track (Main, LC, SSR, LTP, with or without SBR/PS). Files with no audio track, other audio codecs (MP3, Opus, AC-3 and so on), other AAC object types, an empty track, or more than one audio sample description are reported as unsupported. Only the first video and first audio track are used; other tracks are not retimed.
+- **Video-only stretching is ambiguous.** If the audio packets are timed right but the video is longer or shorter, the file might have stretched video, or audio that genuinely doesn't cover the clip. It is reported as `suspect` and only fixed on request. A forced fix makes the video match the audio, and refuses if the implied frame rate falls outside 1 to 240 fps.
+- **AAC audio only.** The file needs a video track and an AAC audio track (Main, LC, SSR, LTP, with or without SBR/PS). Files with no audio track, other audio codecs (MP3, Opus, AC-3 and so on), other AAC object types, an empty track, or more than one audio sample description are reported as unsupported.
+- **One video and one audio track.** Any other enabled track (a second audio track, subtitles, timecode, metadata) would keep its old timing, so such files are unsupported. Disabled tracks are ignored.
 - **Unfragmented MP4/MOV only.** Fragmented MP4 (`moof`/`mvex`), files with no `moov`, or more than one, are unsupported.
 - **Edit lists.** None, or a single edit at normal speed, are handled. Multi-segment edit lists, empty edits and edits that change the rate are unsupported.
-- **Frame rate is made constant.** Every video frame gets the same duration, so variable-frame-rate footage becomes constant-rate in the output. Rates that aren't whole numbers snap to the nearest whole-number rate (59.94 becomes 60, 29.97 becomes 30, 23.976 becomes 24).
-- **Precision is one audio packet.** The real length is known to the nearest AAC packet (about 23 ms at 44.1 kHz), so short clips have a larger relative error.
-- **Some audio timescales can't be corrected.** If the audio needs fixing and its media timescale isn't a whole multiple of its sample rate, or the audio track has composition offsets (AAC never needs them), the file is reported as unsupported rather than guessed at.
+- **Stretched audio is made uniform.** Every packet of stretched audio gets the same duration, so a genuine gap inside stretched audio would be closed. Audio that isn't stretched is never changed.
+- **Precision is one audio packet.** The real length is known to the nearest AAC packet (23 ms at 44.1 kHz, 46 ms for HE-AAC), plus whatever the encoder trimmed at the end. On a short clip that can't tell 59.94 fps from 60, which is why only whole-number rates are snapped to, and only when the result still ends with the audio.
+- **Some files can't be corrected exactly.** If stretched audio's media timescale isn't a whole multiple of its sample rate, the audio track has composition offsets (AAC never needs them), or rescaled video timestamps no longer fit the 32-bit fields, the file is reported as unsupported rather than guessed at.
 - **Whole file in memory.** The file is read into memory, and so is the output copy. Very large files are limited by the browser or Node heap.
-- **A file that is already right is left alone.** A claimed length within 2% of the real one counts as fine.
 
 ## Development
 
@@ -120,14 +127,14 @@ pnpm test       # vitest
 pnpm build      # static site in build/
 ```
 
-`pnpm test` runs the library and UI-text tests. The output checks (decodes without errors, packets byte-identical, expected timestamps) use ffprobe and ffmpeg when they are on PATH.
+`pnpm test` runs the library and UI-text tests. The output checks (decodes without errors, packets byte-identical and in order, frame timestamps scaled by one factor, video, audio and container lengths) use ffprobe and ffmpeg when they are on PATH.
 
 Layout:
 
 - `src/lib/restamp/`: the library. `index.ts` is the entry, `types.ts` the contract.
 - `src/routes`, `src/lib/components`, `src/lib/ui`: the web app.
 - `scripts/restamp.ts`: the CLI.
-- `fixtures/`: test files. The synthetic ones are made by `scripts/make-fixtures.sh` (needs ffmpeg with libx264 and libx265): a test pattern that flashes white and beeps at the start of every second, plus broken copies made by stretching timestamps with `-itsscale`. `real-world-heaac-hevc.mp4` is a real affected file.
+- `fixtures/`: test files, named by their expected status. The synthetic ones are made by `scripts/make-fixtures.sh` (needs ffmpeg with libx264 and libx265): a test pattern that flashes white and beeps at the start of every second; broken copies made by stretching timestamps with `-itsscale` (including variable frame rate, 59.94 fps and an awkward timescale); correct but imperfect files that must be left alone (`ok-*`: trimmed, an audio gap, no edit lists, variable frame rate, 59.94 fps) or only flagged (`suspect-*`: audio shorter or longer than the video); and a file with two audio tracks (`unsupported-*`). `broken-2.5x-video-only.mp4` predates the naming and is `suspect`. `real-world-heaac-hevc.mp4` is a real affected file.
 - `assets/demo/`: the README demo.
 
 Regenerate the fixtures and the demo GIF (Git Bash, or any POSIX shell with ffmpeg):
